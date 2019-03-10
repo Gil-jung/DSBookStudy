@@ -116,7 +116,51 @@ if __name__ == '__main__':
     print('##########  Best Estimator  ##########')
     print(grid_search.best_estimator_)
     print()
-    cvres = pd.DataFrame(np.c_[grid_search.cv_results_["mean_test_score"], grid_search.cv_results_["params"]],
-                         columns=["mean_test_score", "params"])
-    # sns.barplot(x=cvres["params"], y=cvres["mean_test_score"], data=cvres)
-    # plt.show()
+    print('##########  Hyper Parameter Search Result  ##########')
+    cvres = grid_search.cv_results_
+    for mean_score, params in zip(cvres["mean_test_score"], cvres["params"]):
+        print(np.sqrt(-mean_score), params)
+    print()
+    print('##########  Feature Importances  ##########')
+    feature_importances = grid_search.best_estimator_.feature_importances_
+    extra_attribs = ["rooms_per_hhold", "pop_per_hhold", "bedrooms_per_room"]
+    cat_encoder = full_pipeline.named_transformers_["cat"]
+    cat_one_hot_attribs = list(cat_encoder.categories_[0])
+    attributes = num_attribs + extra_attribs + cat_one_hot_attribs
+    print(sorted(zip(feature_importances, attributes), reverse=True))
+    print()
+
+    ##########  (Option) Preparation & Feature Importances Hyper Parameter Search ##########
+    # prepare_select_and_predict_pipeline = Pipeline([
+    #     ('preparation', full_pipeline),
+    #     ('feature_selection', TopFeatureSelector(feature_importances, k)),
+    #     ('forest_reg', RandomForestRegressor(**grid_search.best_params_))
+    # ])
+    #
+    # param_grid = [
+    #     {'preparation__num__imputer__strategy': ['mean', 'median', 'most_frequent'],
+    #      'feature_selection__k': list(range(1, len(feature_importances) + 1))}
+    # ]
+    #
+    # grid_search_prep = GridSearchCV(prepare_select_and_predict_pipeline, param_grid, cv=5,
+    #                                 scoring='neg_mean_squared_error', verbose=2, n_jobs=1)
+    # grid_search_prep.fit(housing, housing_labels)
+    # print('##########  Best Parameter  ##########')
+    # print(grid_search.best_params_)
+    # print()
+    # print('##########  Hyper Parameter Search Result  ##########')
+    # cvres2 = grid_search_prep.cv_results_
+    # for mean_score, params in zip(cvres2["mean_test_score"], cvres2["params"]):
+    #     print(np.sqrt(-mean_score), params)
+    # print()
+
+    ##########  Final Test Result ##########
+    final_model = grid_search.best_estimator_
+    X_test = strat_test_set.drop("median_house_value", axis=1)
+    y_test = strat_test_set["median_house_value"].copy()
+    X_test_prepared = full_pipeline.transform(X_test)
+    final_predictions = final_model.predict(X_test_prepared)
+    final_mse = mean_squared_error(y_test, final_predictions)
+    final_rmse = np.sqrt(final_mse)
+    print('##########  Final Test Result  ##########')
+    print(final_rmse)
