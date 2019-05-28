@@ -2,10 +2,10 @@ import copy
 import pylab
 import numpy as np
 from environment import Env
-from keras.layers import Dense
-from keras.optimizers import Adam
-from keras.models import Sequential
-from keras import backend as K
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.models import Sequential
+from tensorflow.keras import backend as K
 
 EPISODES = 2500
 
@@ -49,8 +49,7 @@ class ReinforceAgent:
         
         # 정책신경망을 업데이트하는 훈련함수 생성
         optimizer = Adam(lr=self.learning_rate)
-        updates = optimizer.get_updates(self.model.trainable_weights,[],
-                                        loss)
+        updates = optimizer.get_updates(self.model.trainable_weights, [], loss)
         train = K.function([self.model.input, action, discounted_rewards], [],
                            updates=updates)
 

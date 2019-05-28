@@ -2,10 +2,10 @@ import sys
 import gym
 import pylab
 import numpy as np
-from keras.layers import Dense
-from keras.models import Sequential
-from keras.optimizers import Adam
-from keras import backend as K
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 
 EPISODES = 1000
 
