@@ -1,6 +1,6 @@
-from np import *  # import numpy as np
-from config import GPU
-from functions import softmax, cross_entropy_error
+from common.np import *  # import numpy as np
+from common.config import GPU
+from common.functions import softmax, cross_entropy_error
 
 
 class MatMul:
@@ -35,7 +35,7 @@ class Affine:
         self.x = x
         return out
 
-    def backword(self, dout):
+    def backward(self, dout):
         W, b = self.params
         dx = np.matmul(dout, W.T)
         dW = np.matmul(self.x.T, dout)
@@ -63,7 +63,7 @@ class SoftmaxWithLoss:
         loss = cross_entropy_error(self.y, self.t)
         return loss
 
-    def backword(self, dout=1):
+    def backward(self, dout=1):
         batch_size = self.t.shape[0]
 
         dx = self.y.copy()
