@@ -1,13 +1,29 @@
 import copy
 import pylab
 import numpy as np
+import tensorflow as tf
 from environment import Env
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model
 from tensorflow.keras import backend as K
 
 EPISODES = 2500
+
+
+class Reinforce(Model):
+    def __init__(self, num_action):
+        super(Reinforce, self).__init__()
+        self.layer1 = Dense(24, activation='relu')
+        self.layer2 = Dense(24, activation='relu')
+        self.logits = Dense(num_action, activation='softmax')
+
+    def call(self, state):
+        x = self.layer1(state)
+        x = self.layer2(x)
+        logits = self.logits(x)
+        return logits
+
 
 # 그리드월드 예제에서의 REINFORCE 에이전트
 class ReinforceAgent:
@@ -18,48 +34,32 @@ class ReinforceAgent:
         # 상태와 행동의 크기 정의
         self.action_size = len(self.action_space)
         self.state_size = 15
-        self.discount_factor = 0.99 
+        self.discount_factor = 0.99
         self.learning_rate = 0.001
 
-        self.model = self.build_model()
-        self.optimizer = self.optimizer()
+        self.model = Reinforce(self.action_size)
+        self.optimizer = Adam(lr=self.learning_rate)
         self.states, self.actions, self.rewards = [], [], []
 
         if self.load_model:
             self.model.load_weights('./save_model/reinforce_trained.h5')
-    
-    # 상태가 입력, 각 행동의 확률이 출력인 인공신경망 생성
-    def build_model(self):
-        model = Sequential()
-        model.add(Dense(24, input_dim=self.state_size, activation='relu'))
-        model.add(Dense(24, activation='relu'))
-        model.add(Dense(self.action_size, activation='softmax'))
-        model.summary()
-        return model
-    
-    # 정책신경망을 업데이트 하기 위한 오류함수와 훈련함수의 생성
-    def optimizer(self):
-        action = K.placeholder(shape=[None, 5])
-        discounted_rewards = K.placeholder(shape=[None, ])
-        
-        # 크로스 엔트로피 오류함수 계산
-        action_prob = K.sum(action * self.model.output, axis=1)
-        cross_entropy = K.log(action_prob) * discounted_rewards
-        loss = -K.sum(cross_entropy)
-        
-        # 정책신경망을 업데이트하는 훈련함수 생성
-        optimizer = Adam(lr=self.learning_rate)
-        updates = optimizer.get_updates(self.model.trainable_weights, [], loss)
-        train = K.function([self.model.input, action, discounted_rewards], [],
-                           updates=updates)
 
-        return train
+
+    # 정책신경망을 업데이트 하기 위한 오류함수와 훈련함수의 생성
+    def actor_loss(self, states, actions, rewards):
+        policy = self.model(tf.convert_to_tensor(np.vstack(states), dtype=tf.float32))
+
+        # 크로스 엔트로피 오류함수 계산
+        action_prob = tf.math.reduce_sum(actions * policy, axis=1)
+        cross_entropy = tf.math.log(action_prob) * rewards
+        loss = -tf.math.reduce_sum(cross_entropy)
+        return loss
 
     # 정책신경망으로 행동 선택
     def get_action(self, state):
-        policy = self.model.predict(state)[0]
-        return np.random.choice(self.action_size, 1, p=policy)[0]
-    
+        policy = self.model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))[0]
+        return np.array(tf.squeeze(tf.random.categorical(policy, 1), axis=1))[0]
+
     # 반환값 계산
     def discount_rewards(self, rewards):
         discounted_rewards = np.zeros_like(rewards)
@@ -68,7 +68,7 @@ class ReinforceAgent:
             running_add = running_add * self.discount_factor + rewards[t]
             discounted_rewards[t] = running_add
         return discounted_rewards
-    
+
     # 한 에피소드 동안의 상태, 행동, 보상을 저장
     def append_sample(self, state, action, reward):
         self.states.append(state[0])
@@ -83,7 +83,14 @@ class ReinforceAgent:
         discounted_rewards -= np.mean(discounted_rewards)
         discounted_rewards /= np.std(discounted_rewards)
 
-        self.optimizer([self.states, self.actions, discounted_rewards])
+        actor_variable = self.model.trainable_variables
+        with tf.GradientTape() as tape:
+            tape.watch(actor_variable)
+            actor_loss = self.actor_loss(self.states, self.actions, discounted_rewards)
+
+        actor_grads = tape.gradient(actor_loss, actor_variable)
+        self.optimizer.apply_gradients(zip(actor_grads, actor_variable))
+
         self.states, self.actions, self.rewards = [], [], []
 
 
@@ -119,7 +126,7 @@ if __name__ == "__main__":
                 agent.train_model()
                 scores.append(score)
                 episodes.append(e)
-                score = round(score,2)
+                score = round(score, 2)
                 print("episode:", e, "  score:", score, "  time_step:",
                       global_step)
 
@@ -128,3 +135,6 @@ if __name__ == "__main__":
             pylab.plot(episodes, scores, 'b')
             pylab.savefig("./save_graph/reinforce.png")
             agent.model.save_weights("./save_model/reinforce.h5")
+
+    K.clear_session()
+    del agent.model

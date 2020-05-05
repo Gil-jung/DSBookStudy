@@ -2,12 +2,40 @@ import sys
 import gym
 import pylab
 import numpy as np
+import tensorflow as tf
 from tensorflow.keras.layers import Dense
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model
+from tensorflow.keras.losses import categorical_crossentropy, SparseCategoricalCrossentropy
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 
 EPISODES = 1000
+
+
+class Actor(Model):
+    def __init__(self, num_action):
+        super(Actor, self).__init__()
+        self.layer1 = Dense(24, activation='relu', kernel_initializer='he_uniform')
+        self.logits = Dense(num_action, activation='softmax', kernel_initializer='he_uniform')
+
+    def call(self, state):
+        x = self.layer1(state)
+        logits = self.logits(x)
+        return logits
+
+
+class Critic(Model):
+    def __init__(self):
+        super(Critic, self).__init__()
+        self.layer1 = Dense(24, activation='relu', kernel_initializer='he_uniform')
+        self.layer2 = Dense(24, activation='relu', kernel_initializer='he_uniform')
+        self.value = Dense(1, kernel_initializer='he_uniform')
+
+    def call(self, state):
+        x = self.layer1(state)
+        x = self.layer2(x)
+        value = self.value(x)
+        return value
 
 
 # 카트폴 예제에서의 액터-크리틱(A2C) 에이전트
@@ -26,92 +54,103 @@ class A2CAgent:
         self.critic_lr = 0.005
 
         # 정책신경망과 가치신경망 생성
-        self.actor = self.build_actor()
-        self.critic = self.build_critic()
-        self.actor_updater = self.actor_optimizer()
-        self.critic_updater = self.critic_optimizer()
+        self.actor = Actor(self.action_size)
+        self.actor_opt = Adam(learning_rate=self.actor_lr)
+
+        self.critic = Critic()
+        self.critic_opt = Adam(learning_rate=self.critic_lr)
 
         if self.load_model:
             self.actor.load_weights("./save_model/cartpole_actor_trained.h5")
             self.critic.load_weights("./save_model/cartpole_critic_trained.h5")
 
-    # actor: 상태를 받아 각 행동의 확률을 계산
-    def build_actor(self):
-        actor = Sequential()
-        actor.add(Dense(24, input_dim=self.state_size, activation='relu',
-                        kernel_initializer='he_uniform'))
-        actor.add(Dense(self.action_size, activation='softmax',
-                        kernel_initializer='he_uniform'))
-        actor.summary()
-        return actor
-
-    # critic: 상태를 받아서 상태의 가치를 계산
-    def build_critic(self):
-        critic = Sequential()
-        critic.add(Dense(24, input_dim=self.state_size, activation='relu',
-                         kernel_initializer='he_uniform'))
-        critic.add(Dense(24, input_dim=self.state_size, activation='relu',
-                         kernel_initializer='he_uniform'))
-        critic.add(Dense(self.value_size, activation='linear',
-                         kernel_initializer='he_uniform'))
-        critic.summary()
-        return critic
-
     # 정책신경망의 출력을 받아 확률적으로 행동을 선택
     def get_action(self, state):
-        policy = self.actor.predict(state, batch_size=1).flatten()
-        return np.random.choice(self.action_size, 1, p=policy)[0]
+        policy = self.actor(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
+        action = tf.squeeze(tf.random.categorical(policy, 1), axis=-1)
+        return np.array(action)[0]
+
+    def compute_advantages(self, states, rewards, dones):
+        last_state = states[-1]
+        if dones[-1] == True:
+            reward_sum = 0
+        else:
+            reward_sum = self.critic(tf.convert_to_tensor(last_state[None, :], dtype=tf.float32))
+        discounted_rewards = []
+        for reward in rewards[::-1]:
+            reward_sum = reward + self.discount_factor * reward_sum
+            discounted_rewards.append(reward_sum)
+        discounted_rewards.reverse()
+        values = self.critic(tf.convert_to_tensor(np.vstack(states), dtype=tf.float32))
+        advantages = discounted_rewards - values
+        return advantages
+
 
     # 정책신경망을 업데이트하는 함수
-    def actor_optimizer(self):
-        action = K.placeholder(shape=[None, self.action_size])
-        advantage = K.placeholder(shape=[None, ])
+    def actor_loss(self, states, actions, advantages):
+        policy = self.actor(tf.convert_to_tensor(np.vstack(states), dtype=tf.float32))
 
-        action_prob = K.sum(action * self.actor.output, axis=1)
-        cross_entropy = K.log(action_prob) * advantage
-        loss = -K.sum(cross_entropy)
+        # entropy = categorical_crossentropy(policy, policy, from_logits=False)
+        ce_loss = SparseCategoricalCrossentropy(from_logits=False)
 
-        optimizer = Adam(lr=self.actor_lr)
-        updates = optimizer.get_updates(self.actor.trainable_weights, [], loss)
-        train = K.function([self.actor.input, action, advantage], [],
-                           updates=updates)
-        return train
+        log_pi = ce_loss(actions, policy)
+        policy_loss = log_pi * np.array(advantages)
+        policy_loss = tf.reduce_mean(policy_loss)
+
+        return policy_loss
 
     # 가치신경망을 업데이트하는 함수
-    def critic_optimizer(self):
-        target = K.placeholder(shape=[None, ])
-
-        loss = K.mean(K.square(target - self.critic.output))
-
-        optimizer = Adam(lr=self.critic_lr)
-        updates = optimizer.get_updates(self.critic.trainable_weights, [], loss)
-        train = K.function([self.critic.input, target], [], updates=updates)
-
-        return train
+    def critic_loss(self, states, rewards, dones):
+        last_state = states[-1]
+        if dones[-1] == True:
+            reward_sum = 0
+        else:
+            reward_sum = self.critic(tf.convert_to_tensor(last_state[None, :], dtype=tf.float32))
+        discounted_rewards = []
+        for reward in rewards[::-1]:
+            reward_sum = reward + self.discount_factor * reward_sum
+            discounted_rewards.append(reward_sum)
+        discounted_rewards.reverse()
+        discounted_rewards = tf.convert_to_tensor(np.array(discounted_rewards)[None, :], dtype=tf.float32)
+        values = self.critic(tf.convert_to_tensor(np.vstack(states), dtype=tf.float32))
+        error = tf.square(values - discounted_rewards) * 0.5
+        error = tf.reduce_mean(error)
+        return error
 
     # 각 타임스텝마다 정책신경망과 가치신경망을 업데이트
-    def train_model(self, state, action, reward, next_state, done):
-        value = self.critic.predict(state)[0]
-        next_value = self.critic.predict(next_state)[0]
+    def train(self, states, actions, rewards, next_states, dones):
+        critic_variable = self.critic.trainable_variables
+        with tf.GradientTape() as tape_critic:
+            tape_critic.watch(critic_variable)
+            critic_loss = self.critic_loss(states, rewards, dones)
 
-        act = np.zeros([1, self.action_size])
-        act[0][action] = 1
+        # gradient descent will be applied automatically
+        critic_grads = tape_critic.gradient(critic_loss, critic_variable)
+        self.critic_opt.apply_gradients(zip(critic_grads, critic_variable))
 
-        # 벨만 기대 방정식를 이용한 어드벤티지와 업데이트 타깃
-        if done:
-            advantage = reward - value
-            target = [reward]
-        else:
-            advantage = (reward + self.discount_factor * next_value) - value
-            target = reward + self.discount_factor * next_value
+        advantages = self.compute_advantages(states, rewards, dones)
+        actor_variable = self.actor.trainable_variables
+        with tf.GradientTape() as tape_actor:
+            tape_actor.watch(actor_variable)
+            actor_loss = self.actor_loss(states, actions, advantages)
 
-        self.actor_updater([state, act, advantage])
-        self.critic_updater([state, target])
+        actor_grads = tape_actor.gradient(actor_loss, actor_variable)
+        self.actor_opt.apply_gradients(zip(actor_grads, actor_variable))
 
 
 if __name__ == "__main__":
     # CartPole-v1 환경, 최대 타임스텝 수가 500
     env = gym.make('CartPole-v1')
+
+    t_end = 500
+    train_size = 20
+
+    states = []
+    actions = []
+    rewards = []
+    next_states = []
+    dones = []
+
     # 환경으로부터 상태와 행동의 크기를 받아옴
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
@@ -125,22 +164,38 @@ if __name__ == "__main__":
         done = False
         score = 0
         state = env.reset()
-        state = np.reshape(state, [1, state_size])
+        # state = np.reshape(state, [1, state_size])
 
-        while not done:
+        for t in range(t_end):
             if agent.render:
                 env.render()
 
             action = agent.get_action(state)
             next_state, reward, done, info = env.step(action)
-            next_state = np.reshape(next_state, [1, state_size])
+            # next_state = np.reshape(next_state, [1, state_size])
+
+            if t == t_end:
+                done = True
+
             # 에피소드가 중간에 끝나면 -100 보상
             reward = reward if not done or score == 499 else -100
 
-            agent.train_model(state, action, reward, next_state, done)
+            states.append(state)
+            actions.append(action)
+            rewards.append(reward)
+            next_states.append(next_state)
+            dones.append(done)
 
             score += reward
             state = next_state
+
+            if len(states) == train_size or done:
+                agent.train(states, actions, rewards, next_states, dones)
+                states = []
+                actions = []
+                rewards = []
+                next_states = []
+                dones = []
 
             if done:
                 # 에피소드마다 학습 결과 출력
@@ -157,3 +212,8 @@ if __name__ == "__main__":
                     agent.critic.save_weights(
                         "./save_model/cartpole_critic.h5")
                     sys.exit()
+
+                break
+
+    K.clear_session()
+    del agent.model
